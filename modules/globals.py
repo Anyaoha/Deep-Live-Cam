@@ -9,7 +9,7 @@ file_types = [
     ("Video", ("*.mp4", "*.mkv")),
 ]
 
-souce_target_map = []
+source_target_map = []
 simple_map = {}
 
 source_path = None
@@ -26,7 +26,7 @@ nsfw_filter = False
 video_encoder = None
 video_quality = None
 live_mirror = False
-live_resizable = False
+live_resizable = True
 max_memory = None
 execution_providers: List[str] = []
 execution_threads = None
@@ -36,3 +36,8 @@ fp_ui: Dict[str, bool] = {"face_enhancer": False}
 camera_input_combobox = None
 webcam_preview_running = False
 show_fps = False
+mouth_mask = False
+show_mouth_mask_box = False
+mask_feather_ratio = 8
+mask_down_size = 0.50
+mask_size = 1

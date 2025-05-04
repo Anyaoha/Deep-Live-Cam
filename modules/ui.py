@@ -7,7 +7,6 @@ from cv2_enumerate_cameras import enumerate_cameras  # Add this import
 from PIL import Image, ImageOps
 import time
 import json
-
 import modules.globals
 import modules.metadata
 from modules.face_analyser import (
@@ -26,6 +25,12 @@ from modules.utilities import (
     resolve_relative_path,
     has_image_extension,
 )
+from modules.video_capture import VideoCapturer
+from modules.gettext import LanguageManager
+import platform
+
+if platform.system() == "Windows":
+    from pygrabber.dshow_graph import FilterGraph
 
 ROOT = None
 POPUP = None
@@ -59,6 +64,7 @@ RECENT_DIRECTORY_SOURCE = None
 RECENT_DIRECTORY_TARGET = None
 RECENT_DIRECTORY_OUTPUT = None
 
+_ = None
 preview_label = None
 preview_slider = None
 source_label = None
@@ -73,9 +79,11 @@ target_label_dict_live = {}
 img_ft, vid_ft = modules.globals.file_types
 
 
-def init(start: Callable[[], None], destroy: Callable[[], None]) -> ctk.CTk:
-    global ROOT, PREVIEW
+def init(start: Callable[[], None], destroy: Callable[[], None], lang: str) -> ctk.CTk:
+    global ROOT, PREVIEW, _
 
+    lang_manager = LanguageManager(lang)
+    _ = lang_manager._
     ROOT = create_root(start, destroy)
     PREVIEW = create_preview(ROOT)
 
@@ -95,6 +103,8 @@ def save_switch_states():
         "live_resizable": modules.globals.live_resizable,
         "fp_ui": modules.globals.fp_ui,
         "show_fps": modules.globals.show_fps,
+        "mouth_mask": modules.globals.mouth_mask,
+        "show_mouth_mask_box": modules.globals.show_mouth_mask_box,
     }
     with open("switch_states.json", "w") as f:
         json.dump(switch_states, f)
@@ -115,6 +125,10 @@ def load_switch_states():
         modules.globals.live_resizable = switch_states.get("live_resizable", False)
         modules.globals.fp_ui = switch_states.get("fp_ui", {"face_enhancer": False})
         modules.globals.show_fps = switch_states.get("show_fps", False)
+        modules.globals.mouth_mask = switch_states.get("mouth_mask", False)
+        modules.globals.show_mouth_mask_box = switch_states.get(
+            "show_mouth_mask_box", False
+        )
     except FileNotFoundError:
         # If the file doesn't exist, use default values
         pass
@@ -144,7 +158,7 @@ def create_root(start: Callable[[], None], destroy: Callable[[], None]) -> ctk.C
     target_label.place(relx=0.6, rely=0.1, relwidth=0.3, relheight=0.25)
 
     select_face_button = ctk.CTkButton(
-        root, text="Select a face", cursor="hand2", command=lambda: select_source_path()
+        root, text=_("Select a face"), cursor="hand2", command=lambda: select_source_path()
     )
     select_face_button.place(relx=0.1, rely=0.4, relwidth=0.3, relheight=0.1)
 
@@ -155,7 +169,7 @@ def create_root(start: Callable[[], None], destroy: Callable[[], None]) -> ctk.C
 
     select_target_button = ctk.CTkButton(
         root,
-        text="Select a target",
+        text=_("Select a target"),
         cursor="hand2",
         command=lambda: select_target_path(),
     )
@@ -164,7 +178,7 @@ def create_root(start: Callable[[], None], destroy: Callable[[], None]) -> ctk.C
     keep_fps_value = ctk.BooleanVar(value=modules.globals.keep_fps)
     keep_fps_checkbox = ctk.CTkSwitch(
         root,
-        text="Keep fps",
+        text=_("Keep fps"),
         variable=keep_fps_value,
         cursor="hand2",
         command=lambda: (
@@ -177,7 +191,7 @@ def create_root(start: Callable[[], None], destroy: Callable[[], None]) -> ctk.C
     keep_frames_value = ctk.BooleanVar(value=modules.globals.keep_frames)
     keep_frames_switch = ctk.CTkSwitch(
         root,
-        text="Keep frames",
+        text=_("Keep frames"),
         variable=keep_frames_value,
         cursor="hand2",
         command=lambda: (
@@ -190,7 +204,7 @@ def create_root(start: Callable[[], None], destroy: Callable[[], None]) -> ctk.C
     enhancer_value = ctk.BooleanVar(value=modules.globals.fp_ui["face_enhancer"])
     enhancer_switch = ctk.CTkSwitch(
         root,
-        text="Face Enhancer",
+        text=_("Face Enhancer"),
         variable=enhancer_value,
         cursor="hand2",
         command=lambda: (
@@ -203,7 +217,7 @@ def create_root(start: Callable[[], None], destroy: Callable[[], None]) -> ctk.C
     keep_audio_value = ctk.BooleanVar(value=modules.globals.keep_audio)
     keep_audio_switch = ctk.CTkSwitch(
         root,
-        text="Keep audio",
+        text=_("Keep audio"),
         variable=keep_audio_value,
         cursor="hand2",
         command=lambda: (
@@ -216,7 +230,7 @@ def create_root(start: Callable[[], None], destroy: Callable[[], None]) -> ctk.C
     many_faces_value = ctk.BooleanVar(value=modules.globals.many_faces)
     many_faces_switch = ctk.CTkSwitch(
         root,
-        text="Many faces",
+        text=_("Many faces"),
         variable=many_faces_value,
         cursor="hand2",
         command=lambda: (
@@ -229,7 +243,7 @@ def create_root(start: Callable[[], None], destroy: Callable[[], None]) -> ctk.C
     color_correction_value = ctk.BooleanVar(value=modules.globals.color_correction)
     color_correction_switch = ctk.CTkSwitch(
         root,
-        text="Fix Blueish Cam\n(force cv2 to use RGB instead of BGR)",
+        text=_("Fix Blueish Cam"),
         variable=color_correction_value,
         cursor="hand2",
         command=lambda: (
@@ -246,12 +260,13 @@ def create_root(start: Callable[[], None], destroy: Callable[[], None]) -> ctk.C
     map_faces = ctk.BooleanVar(value=modules.globals.map_faces)
     map_faces_switch = ctk.CTkSwitch(
         root,
-        text="Map faces",
+        text=_("Map faces"),
         variable=map_faces,
         cursor="hand2",
         command=lambda: (
             setattr(modules.globals, "map_faces", map_faces.get()),
             save_switch_states(),
+            close_mapper_window() if not map_faces.get() else None
         ),
     )
     map_faces_switch.place(relx=0.1, rely=0.75)
@@ -259,7 +274,7 @@ def create_root(start: Callable[[], None], destroy: Callable[[], None]) -> ctk.C
     show_fps_value = ctk.BooleanVar(value=modules.globals.show_fps)
     show_fps_switch = ctk.CTkSwitch(
         root,
-        text="Show FPS",
+        text=_("Show FPS"),
         variable=show_fps_value,
         cursor="hand2",
         command=lambda: (
@@ -269,49 +284,82 @@ def create_root(start: Callable[[], None], destroy: Callable[[], None]) -> ctk.C
     )
     show_fps_switch.place(relx=0.6, rely=0.75)
 
+    mouth_mask_var = ctk.BooleanVar(value=modules.globals.mouth_mask)
+    mouth_mask_switch = ctk.CTkSwitch(
+        root,
+        text=_("Mouth Mask"),
+        variable=mouth_mask_var,
+        cursor="hand2",
+        command=lambda: setattr(modules.globals, "mouth_mask", mouth_mask_var.get()),
+    )
+    mouth_mask_switch.place(relx=0.1, rely=0.55)
+
+    show_mouth_mask_box_var = ctk.BooleanVar(value=modules.globals.show_mouth_mask_box)
+    show_mouth_mask_box_switch = ctk.CTkSwitch(
+        root,
+        text=_("Show Mouth Mask Box"),
+        variable=show_mouth_mask_box_var,
+        cursor="hand2",
+        command=lambda: setattr(
+            modules.globals, "show_mouth_mask_box", show_mouth_mask_box_var.get()
+        ),
+    )
+    show_mouth_mask_box_switch.place(relx=0.6, rely=0.55)
+
     start_button = ctk.CTkButton(
-        root, text="Start", cursor="hand2", command=lambda: analyze_target(start, root)
+        root, text=_("Start"), cursor="hand2", command=lambda: analyze_target(start, root)
     )
     start_button.place(relx=0.15, rely=0.80, relwidth=0.2, relheight=0.05)
 
     stop_button = ctk.CTkButton(
-        root, text="Destroy", cursor="hand2", command=lambda: destroy()
+        root, text=_("Destroy"), cursor="hand2", command=lambda: destroy()
     )
     stop_button.place(relx=0.4, rely=0.80, relwidth=0.2, relheight=0.05)
 
     preview_button = ctk.CTkButton(
-        root, text="Preview", cursor="hand2", command=lambda: toggle_preview()
+        root, text=_("Preview"), cursor="hand2", command=lambda: toggle_preview()
     )
     preview_button.place(relx=0.65, rely=0.80, relwidth=0.2, relheight=0.05)
 
     # --- Camera Selection ---
-    camera_label = ctk.CTkLabel(root, text="Select Camera:")
+    camera_label = ctk.CTkLabel(root, text=_("Select Camera:"))
     camera_label.place(relx=0.1, rely=0.86, relwidth=0.2, relheight=0.05)
 
     available_cameras = get_available_cameras()
-    # Convert camera indices to strings for CTkOptionMenu
-    available_camera_indices, available_camera_strings = available_cameras
-    camera_variable = ctk.StringVar(
-        value=(
-            available_camera_strings[0]
-            if available_camera_strings
-            else "No cameras found"
+    camera_indices, camera_names = available_cameras
+
+    if not camera_names or camera_names[0] == "No cameras found":
+        camera_variable = ctk.StringVar(value="No cameras found")
+        camera_optionmenu = ctk.CTkOptionMenu(
+            root,
+            variable=camera_variable,
+            values=["No cameras found"],
+            state="disabled",
         )
-    )
-    camera_optionmenu = ctk.CTkOptionMenu(
-        root, variable=camera_variable, values=available_camera_strings
-    )
+    else:
+        camera_variable = ctk.StringVar(value=camera_names[0])
+        camera_optionmenu = ctk.CTkOptionMenu(
+            root, variable=camera_variable, values=camera_names
+        )
+
     camera_optionmenu.place(relx=0.35, rely=0.86, relwidth=0.25, relheight=0.05)
 
     live_button = ctk.CTkButton(
         root,
-        text="Live",
+        text=_("Live"),
         cursor="hand2",
         command=lambda: webcam_preview(
             root,
-            available_camera_indices[
-                available_camera_strings.index(camera_variable.get())
-            ],
+            (
+                camera_indices[camera_names.index(camera_variable.get())]
+                if camera_names and camera_names[0] != "No cameras found"
+                else None
+            ),
+        ),
+        state=(
+            "normal"
+            if camera_names and camera_names[0] != "No cameras found"
+            else "disabled"
         ),
     )
     live_button.place(relx=0.65, rely=0.86, relwidth=0.2, relheight=0.05)
@@ -328,10 +376,19 @@ def create_root(start: Callable[[], None], destroy: Callable[[], None]) -> ctk.C
         text_color=ctk.ThemeManager.theme.get("URL").get("text_color")
     )
     donate_label.bind(
-        "<Button>", lambda event: webbrowser.open("https://paypal.me/hacksider")
+        "<Button>", lambda event: webbrowser.open("https://deeplivecam.net")
     )
 
     return root
+
+def close_mapper_window():
+    global POPUP, POPUP_LIVE
+    if POPUP and POPUP.winfo_exists():
+        POPUP.destroy()
+        POPUP = None
+    if POPUP_LIVE and POPUP_LIVE.winfo_exists():
+        POPUP_LIVE.destroy()
+        POPUP_LIVE = None
 
 
 def analyze_target(start: Callable[[], None], root: ctk.CTk):
@@ -340,7 +397,7 @@ def analyze_target(start: Callable[[], None], root: ctk.CTk):
         return
 
     if modules.globals.map_faces:
-        modules.globals.souce_target_map = []
+        modules.globals.source_target_map = []
 
         if is_image(modules.globals.target_path):
             update_status("Getting unique faces")
@@ -349,8 +406,8 @@ def analyze_target(start: Callable[[], None], root: ctk.CTk):
             update_status("Getting unique faces")
             get_unique_faces_from_target_video()
 
-        if len(modules.globals.souce_target_map) > 0:
-            create_source_target_popup(start, root, modules.globals.souce_target_map)
+        if len(modules.globals.source_target_map) > 0:
+            create_source_target_popup(start, root, modules.globals.source_target_map)
         else:
             update_status("No faces found in target")
     else:
@@ -358,12 +415,12 @@ def analyze_target(start: Callable[[], None], root: ctk.CTk):
 
 
 def create_source_target_popup(
-    start: Callable[[], None], root: ctk.CTk, map: list
+        start: Callable[[], None], root: ctk.CTk, map: list
 ) -> None:
     global POPUP, popup_status_label
 
     POPUP = ctk.CTkToplevel(root)
-    POPUP.title("Source x Target Mapper")
+    POPUP.title(_("Source x Target Mapper"))
     POPUP.geometry(f"{POPUP_WIDTH}x{POPUP_HEIGHT}")
     POPUP.focus()
 
@@ -387,7 +444,7 @@ def create_source_target_popup(
 
         button = ctk.CTkButton(
             scrollable_frame,
-            text="Select source image",
+            text=_("Select source image"),
             command=lambda id=id: on_button_click(map, id),
             width=DEFAULT_BUTTON_WIDTH,
             height=DEFAULT_BUTTON_HEIGHT,
@@ -421,18 +478,18 @@ def create_source_target_popup(
     popup_status_label.grid(row=1, column=0, pady=15)
 
     close_button = ctk.CTkButton(
-        POPUP, text="Submit", command=lambda: on_submit_click(start)
+        POPUP, text=_("Submit"), command=lambda: on_submit_click(start)
     )
     close_button.grid(row=2, column=0, pady=10)
 
 
 def update_popup_source(
-    scrollable_frame: ctk.CTkScrollableFrame, map: list, button_num: int
+        scrollable_frame: ctk.CTkScrollableFrame, map: list, button_num: int
 ) -> list:
     global source_label_dict
 
     source_path = ctk.filedialog.askopenfilename(
-        title="select an source image",
+        title=_("select an source image"),
         initialdir=RECENT_DIRECTORY_SOURCE,
         filetypes=[img_ft],
     )
@@ -452,7 +509,7 @@ def update_popup_source(
             x_min, y_min, x_max, y_max = face["bbox"]
 
             map[button_num]["source"] = {
-                "cv2": cv2_img[int(y_min) : int(y_max), int(x_min) : int(x_max)],
+                "cv2": cv2_img[int(y_min): int(y_max), int(x_min): int(x_max)],
                 "face": face,
             }
 
@@ -483,7 +540,7 @@ def create_preview(parent: ctk.CTkToplevel) -> ctk.CTkToplevel:
 
     preview = ctk.CTkToplevel(parent)
     preview.withdraw()
-    preview.title("Preview")
+    preview.title(_("Preview"))
     preview.configure()
     preview.protocol("WM_DELETE_WINDOW", lambda: toggle_preview())
     preview.resizable(width=True, height=True)
@@ -499,21 +556,27 @@ def create_preview(parent: ctk.CTkToplevel) -> ctk.CTkToplevel:
 
 
 def update_status(text: str) -> None:
-    status_label.configure(text=text)
+    status_label.configure(text=_(text))
     ROOT.update()
 
 
 def update_pop_status(text: str) -> None:
-    popup_status_label.configure(text=text)
+    popup_status_label.configure(text=_(text))
 
 
 def update_pop_live_status(text: str) -> None:
-    popup_status_label_live.configure(text=text)
+    popup_status_label_live.configure(text=_(text))
 
 
 def update_tumbler(var: str, value: bool) -> None:
     modules.globals.fp_ui[var] = value
     save_switch_states()
+    # If we're currently in a live preview, update the frame processors
+    if PREVIEW.state() == "normal":
+        global frame_processors
+        frame_processors = get_frame_processors_modules(
+            modules.globals.frame_processors
+        )
 
 
 def select_source_path() -> None:
@@ -521,7 +584,7 @@ def select_source_path() -> None:
 
     PREVIEW.withdraw()
     source_path = ctk.filedialog.askopenfilename(
-        title="select an source image",
+        title=_("select an source image"),
         initialdir=RECENT_DIRECTORY_SOURCE,
         filetypes=[img_ft],
     )
@@ -564,7 +627,7 @@ def select_target_path() -> None:
 
     PREVIEW.withdraw()
     target_path = ctk.filedialog.askopenfilename(
-        title="select an target image or video",
+        title=_("select an target image or video"),
         initialdir=RECENT_DIRECTORY_TARGET,
         filetypes=[img_ft, vid_ft],
     )
@@ -588,7 +651,7 @@ def select_output_path(start: Callable[[], None]) -> None:
 
     if is_image(modules.globals.target_path):
         output_path = ctk.filedialog.asksaveasfilename(
-            title="save image output file",
+            title=_("save image output file"),
             filetypes=[img_ft],
             defaultextension=".png",
             initialfile="output.png",
@@ -596,7 +659,7 @@ def select_output_path(start: Callable[[], None]) -> None:
         )
     elif is_video(modules.globals.target_path):
         output_path = ctk.filedialog.asksaveasfilename(
-            title="save video output file",
+            title=_("save video output file"),
             filetypes=[vid_ft],
             defaultextension=".mp4",
             initialfile="output.mp4",
@@ -633,17 +696,21 @@ def check_and_ignore_nsfw(target, destroy: Callable = None) -> bool:
 
 
 def fit_image_to_size(image, width: int, height: int):
-    if width is None and height is None:
+    if width is None or height is None or width <= 0 or height <= 0:
         return image
     h, w, _ = image.shape
     ratio_h = 0.0
     ratio_w = 0.0
-    if width > height:
-        ratio_h = height / h
-    else:
-        ratio_w = width / w
-    ratio = max(ratio_w, ratio_h)
-    new_size = (int(ratio * w), int(ratio * h))
+    ratio_w = width / w
+    ratio_h = height / h
+    # Use the smaller ratio to ensure the image fits within the given dimensions
+    ratio = min(ratio_w, ratio_h)
+    
+    # Compute new dimensions, ensuring they're at least 1 pixel
+    new_width = max(1, int(ratio * w))
+    new_height = max(1, int(ratio * h))
+    new_size = (new_width, new_height)
+
     return cv2.resize(image, dsize=new_size)
 
 
@@ -655,7 +722,7 @@ def render_image_preview(image_path: str, size: Tuple[int, int]) -> ctk.CTkImage
 
 
 def render_video_preview(
-    video_path: str, size: Tuple[int, int], frame_number: int = 0
+        video_path: str, size: Tuple[int, int], frame_number: int = 0
 ) -> ctk.CTkImage:
     capture = cv2.VideoCapture(video_path)
     if frame_number:
@@ -695,7 +762,7 @@ def update_preview(frame_number: int = 0) -> None:
         if modules.globals.nsfw_filter and check_and_ignore_nsfw(temp_frame):
             return
         for frame_processor in get_frame_processors_modules(
-            modules.globals.frame_processors
+                modules.globals.frame_processors
         ):
             temp_frame = frame_processor.process_frame(
                 get_one_face(cv2.imread(modules.globals.source_path)), temp_frame
@@ -711,52 +778,116 @@ def update_preview(frame_number: int = 0) -> None:
 
 
 def webcam_preview(root: ctk.CTk, camera_index: int):
+    global POPUP_LIVE
+
+    if POPUP_LIVE and POPUP_LIVE.winfo_exists():
+        update_status("Source x Target Mapper is already open.")
+        POPUP_LIVE.focus()
+        return
+
     if not modules.globals.map_faces:
         if modules.globals.source_path is None:
-            # No image selected
+            update_status("Please select a source image first")
             return
         create_webcam_preview(camera_index)
     else:
-        modules.globals.souce_target_map = []
+        modules.globals.source_target_map = []
         create_source_target_popup_for_webcam(
-            root, modules.globals.souce_target_map, camera_index
+            root, modules.globals.source_target_map, camera_index
         )
+
 
 
 def get_available_cameras():
     """Returns a list of available camera names and indices."""
-    camera_indices = []
-    camera_names = []
+    if platform.system() == "Windows":
+        try:
+            graph = FilterGraph()
+            devices = graph.get_input_devices()
 
-    for camera in enumerate_cameras():
-        cap = cv2.VideoCapture(camera.index)
-        if cap.isOpened():
-            camera_indices.append(camera.index)
-            camera_names.append(camera.name)
-            cap.release()
-    return (camera_indices, camera_names)
+            # Create list of indices and names
+            camera_indices = list(range(len(devices)))
+            camera_names = devices
+
+            # If no cameras found through DirectShow, try OpenCV fallback
+            if not camera_names:
+                # Try to open camera with index -1 and 0
+                test_indices = [-1, 0]
+                working_cameras = []
+
+                for idx in test_indices:
+                    cap = cv2.VideoCapture(idx)
+                    if cap.isOpened():
+                        working_cameras.append(f"Camera {idx}")
+                        cap.release()
+
+                if working_cameras:
+                    return test_indices[: len(working_cameras)], working_cameras
+
+            # If still no cameras found, return empty lists
+            if not camera_names:
+                return [], ["No cameras found"]
+
+            return camera_indices, camera_names
+
+        except Exception as e:
+            print(f"Error detecting cameras: {str(e)}")
+            return [], ["No cameras found"]
+    else:
+        # Unix-like systems (Linux/Mac) camera detection
+        camera_indices = []
+        camera_names = []
+
+        if platform.system() == "Darwin":  # macOS specific handling
+            # Try to open the default FaceTime camera first
+            cap = cv2.VideoCapture(0)
+            if cap.isOpened():
+                camera_indices.append(0)
+                camera_names.append("FaceTime Camera")
+                cap.release()
+
+            # On macOS, additional cameras typically use indices 1 and 2
+            for i in [1, 2]:
+                cap = cv2.VideoCapture(i)
+                if cap.isOpened():
+                    camera_indices.append(i)
+                    camera_names.append(f"Camera {i}")
+                    cap.release()
+        else:
+            # Linux camera detection - test first 10 indices
+            for i in range(10):
+                cap = cv2.VideoCapture(i)
+                if cap.isOpened():
+                    camera_indices.append(i)
+                    camera_names.append(f"Camera {i}")
+                    cap.release()
+
+        if not camera_names:
+            return [], ["No cameras found"]
+
+        return camera_indices, camera_names
 
 
 def create_webcam_preview(camera_index: int):
     global preview_label, PREVIEW
 
-    camera = cv2.VideoCapture(camera_index)
-    camera.set(cv2.CAP_PROP_FRAME_WIDTH, PREVIEW_DEFAULT_WIDTH)
-    camera.set(cv2.CAP_PROP_FRAME_HEIGHT, PREVIEW_DEFAULT_HEIGHT)
-    camera.set(cv2.CAP_PROP_FPS, 60)
+    cap = VideoCapturer(camera_index)
+    if not cap.start(PREVIEW_DEFAULT_WIDTH, PREVIEW_DEFAULT_HEIGHT, 60):
+        update_status("Failed to start camera")
+        return
 
     preview_label.configure(width=PREVIEW_DEFAULT_WIDTH, height=PREVIEW_DEFAULT_HEIGHT)
-
     PREVIEW.deiconify()
 
     frame_processors = get_frame_processors_modules(modules.globals.frame_processors)
-
     source_image = None
     prev_time = time.time()
+    fps_update_interval = 0.5
+    frame_count = 0
     fps = 0
 
-    while camera:
-        ret, frame = camera.read()
+    while True:
+        ret, frame = cap.read()
         if not ret:
             break
 
@@ -770,27 +901,42 @@ def create_webcam_preview(camera_index: int):
                 temp_frame, PREVIEW.winfo_width(), PREVIEW.winfo_height()
             )
 
+        else:
+            temp_frame = fit_image_to_size(
+                temp_frame, PREVIEW.winfo_width(), PREVIEW.winfo_height()
+            )
+
         if not modules.globals.map_faces:
             if source_image is None and modules.globals.source_path:
                 source_image = get_one_face(cv2.imread(modules.globals.source_path))
 
             for frame_processor in frame_processors:
-                temp_frame = frame_processor.process_frame(source_image, temp_frame)
+                if frame_processor.NAME == "DLC.FACE-ENHANCER":
+                    if modules.globals.fp_ui["face_enhancer"]:
+                        temp_frame = frame_processor.process_frame(None, temp_frame)
+                else:
+                    temp_frame = frame_processor.process_frame(source_image, temp_frame)
         else:
             modules.globals.target_path = None
-
             for frame_processor in frame_processors:
-                temp_frame = frame_processor.process_frame_v2(temp_frame)
+                if frame_processor.NAME == "DLC.FACE-ENHANCER":
+                    if modules.globals.fp_ui["face_enhancer"]:
+                        temp_frame = frame_processor.process_frame_v2(temp_frame)
+                else:
+                    temp_frame = frame_processor.process_frame_v2(temp_frame)
 
         # Calculate and display FPS
         current_time = time.time()
-        fps = 1 / (current_time - prev_time)
-        prev_time = current_time
+        frame_count += 1
+        if current_time - prev_time >= fps_update_interval:
+            fps = frame_count / (current_time - prev_time)
+            frame_count = 0
+            prev_time = current_time
 
         if modules.globals.show_fps:
             cv2.putText(
                 temp_frame,
-                f"FPS: {fps:.2f}",
+                f"FPS: {fps:.1f}",
                 (10, 30),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 1,
@@ -810,25 +956,25 @@ def create_webcam_preview(camera_index: int):
         if PREVIEW.state() == "withdrawn":
             break
 
-    camera.release()
+    cap.release()
     PREVIEW.withdraw()
 
 
 def create_source_target_popup_for_webcam(
-    root: ctk.CTk, map: list, camera_index: int
+        root: ctk.CTk, map: list, camera_index: int
 ) -> None:
     global POPUP_LIVE, popup_status_label_live
 
     POPUP_LIVE = ctk.CTkToplevel(root)
-    POPUP_LIVE.title("Source x Target Mapper")
+    POPUP_LIVE.title(_("Source x Target Mapper"))
     POPUP_LIVE.geometry(f"{POPUP_LIVE_WIDTH}x{POPUP_LIVE_HEIGHT}")
     POPUP_LIVE.focus()
 
     def on_submit_click():
         if has_valid_map():
-            POPUP_LIVE.destroy()
             simplify_maps()
-            create_webcam_preview(camera_index)
+            update_pop_live_status("Mappings successfully submitted!")
+            create_webcam_preview(camera_index)  # Open the preview window
         else:
             update_pop_live_status("At least 1 source with target is required!")
 
@@ -837,16 +983,43 @@ def create_source_target_popup_for_webcam(
         refresh_data(map)
         update_pop_live_status("Please provide mapping!")
 
+    def on_clear_click():
+        clear_source_target_images(map)
+        refresh_data(map)
+        update_pop_live_status("All mappings cleared!")
+
     popup_status_label_live = ctk.CTkLabel(POPUP_LIVE, text=None, justify="center")
     popup_status_label_live.grid(row=1, column=0, pady=15)
 
-    add_button = ctk.CTkButton(POPUP_LIVE, text="Add", command=lambda: on_add_click())
-    add_button.place(relx=0.2, rely=0.92, relwidth=0.2, relheight=0.05)
+    add_button = ctk.CTkButton(POPUP_LIVE, text=_("Add"), command=lambda: on_add_click())
+    add_button.place(relx=0.1, rely=0.92, relwidth=0.2, relheight=0.05)
+
+    clear_button = ctk.CTkButton(POPUP_LIVE, text=_("Clear"), command=lambda: on_clear_click())
+    clear_button.place(relx=0.4, rely=0.92, relwidth=0.2, relheight=0.05)
 
     close_button = ctk.CTkButton(
-        POPUP_LIVE, text="Submit", command=lambda: on_submit_click()
+        POPUP_LIVE, text=_("Submit"), command=lambda: on_submit_click()
     )
-    close_button.place(relx=0.6, rely=0.92, relwidth=0.2, relheight=0.05)
+    close_button.place(relx=0.7, rely=0.92, relwidth=0.2, relheight=0.05)
+
+
+
+def clear_source_target_images(map: list):
+    global source_label_dict_live, target_label_dict_live
+
+    for item in map:
+        if "source" in item:
+            del item["source"]
+        if "target" in item:
+            del item["target"]
+
+    for button_num in list(source_label_dict_live.keys()):
+        source_label_dict_live[button_num].destroy()
+        del source_label_dict_live[button_num]
+
+    for button_num in list(target_label_dict_live.keys()):
+        target_label_dict_live[button_num].destroy()
+        del target_label_dict_live[button_num]
 
 
 def refresh_data(map: list):
@@ -868,7 +1041,7 @@ def refresh_data(map: list):
 
         button = ctk.CTkButton(
             scrollable_frame,
-            text="Select source image",
+            text=_("Select source image"),
             command=lambda id=id: on_sbutton_click(map, id),
             width=DEFAULT_BUTTON_WIDTH,
             height=DEFAULT_BUTTON_HEIGHT,
@@ -885,7 +1058,7 @@ def refresh_data(map: list):
 
         button = ctk.CTkButton(
             scrollable_frame,
-            text="Select target image",
+            text=_("Select target image"),
             command=lambda id=id: on_tbutton_click(map, id),
             width=DEFAULT_BUTTON_WIDTH,
             height=DEFAULT_BUTTON_HEIGHT,
@@ -930,12 +1103,12 @@ def refresh_data(map: list):
 
 
 def update_webcam_source(
-    scrollable_frame: ctk.CTkScrollableFrame, map: list, button_num: int
+        scrollable_frame: ctk.CTkScrollableFrame, map: list, button_num: int
 ) -> list:
     global source_label_dict_live
 
     source_path = ctk.filedialog.askopenfilename(
-        title="select an source image",
+        title=_("select an source image"),
         initialdir=RECENT_DIRECTORY_SOURCE,
         filetypes=[img_ft],
     )
@@ -955,7 +1128,7 @@ def update_webcam_source(
             x_min, y_min, x_max, y_max = face["bbox"]
 
             map[button_num]["source"] = {
-                "cv2": cv2_img[int(y_min) : int(y_max), int(x_min) : int(x_max)],
+                "cv2": cv2_img[int(y_min): int(y_max), int(x_min): int(x_max)],
                 "face": face,
             }
 
@@ -982,12 +1155,12 @@ def update_webcam_source(
 
 
 def update_webcam_target(
-    scrollable_frame: ctk.CTkScrollableFrame, map: list, button_num: int
+        scrollable_frame: ctk.CTkScrollableFrame, map: list, button_num: int
 ) -> list:
     global target_label_dict_live
 
     target_path = ctk.filedialog.askopenfilename(
-        title="select an target image",
+        title=_("select an target image"),
         initialdir=RECENT_DIRECTORY_SOURCE,
         filetypes=[img_ft],
     )
@@ -1007,7 +1180,7 @@ def update_webcam_target(
             x_min, y_min, x_max, y_max = face["bbox"]
 
             map[button_num]["target"] = {
-                "cv2": cv2_img[int(y_min) : int(y_max), int(x_min) : int(x_max)],
+                "cv2": cv2_img[int(y_min): int(y_max), int(x_min): int(x_max)],
                 "face": face,
             }
 

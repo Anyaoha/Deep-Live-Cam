@@ -1,3 +1,3 @@
-name = 'Deep Live Cam'
-version = '1.6.0'
-edition = 'Portable'
+name = 'Deep-Live-Cam'
+version = '1.8'
+edition = 'GitHub Edition'
